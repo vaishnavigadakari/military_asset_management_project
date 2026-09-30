@@ -5,8 +5,8 @@ const { authenticateToken } = require('../middleware/auth');
 const { authorizeRoles, enforceBaseScope } = require('../middleware/rbac');
 const { logAudit } = require('../middleware/auditLogger');
 
-// GET /api/purchases - List historical purchases
-router.get('/', authenticateToken, (req, res) => {
+// GET /api/purchases
+router.get('/', authenticateToken, async (req, res) => {
   try {
     let { startDate, endDate, baseId, equipmentTypeId, search } = req.query;
 
@@ -25,7 +25,6 @@ router.get('/', authenticateToken, (req, res) => {
     `;
     const params = [];
 
-    // Base scoping for non-admin
     if (req.user.role !== 'Admin' && req.user.base_id) {
       query += ' AND p.base_id = ?';
       params.push(req.user.base_id);
@@ -34,18 +33,9 @@ router.get('/', authenticateToken, (req, res) => {
       params.push(baseId);
     }
 
-    if (startDate) {
-      query += ' AND p.purchase_date >= ?';
-      params.push(startDate);
-    }
-    if (endDate) {
-      query += ' AND p.purchase_date <= ?';
-      params.push(endDate + ' 23:59:59');
-    }
-    if (equipmentTypeId && equipmentTypeId !== 'all') {
-      query += ' AND et.id = ?';
-      params.push(equipmentTypeId);
-    }
+    if (startDate) { query += ' AND p.purchase_date >= ?'; params.push(startDate); }
+    if (endDate) { query += ' AND p.purchase_date <= ?'; params.push(endDate + ' 23:59:59'); }
+    if (equipmentTypeId && equipmentTypeId !== 'all') { query += ' AND et.id = ?'; params.push(equipmentTypeId); }
     if (search) {
       query += ' AND (p.purchase_ref LIKE ? OR a.name LIKE ? OR p.supplier LIKE ?)';
       const term = `%${search}%`;
@@ -54,7 +44,7 @@ router.get('/', authenticateToken, (req, res) => {
 
     query += ' ORDER BY p.purchase_date DESC';
 
-    const purchases = db.prepare(query).all(...params);
+    const purchases = await db.all(query, ...params);
     res.json(purchases);
   } catch (error) {
     console.error('Error fetching purchases:', error);
@@ -62,8 +52,8 @@ router.get('/', authenticateToken, (req, res) => {
   }
 });
 
-// POST /api/purchases - Record new purchase
-router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander', 'Logistics Officer'), enforceBaseScope, (req, res) => {
+// POST /api/purchases
+router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander', 'Logistics Officer'), enforceBaseScope, async (req, res) => {
   const { base_id, asset_id, quantity, unit_cost, supplier, purchase_date } = req.body;
 
   if (!base_id || !asset_id || !quantity || !supplier) {
@@ -75,46 +65,36 @@ router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander', 'L
     return res.status(400).json({ message: 'Quantity must be a positive integer.' });
   }
 
-  // Get asset unit cost if not provided
   let cost = parseFloat(unit_cost);
   if (isNaN(cost) || cost < 0) {
-    const asset = db.prepare('SELECT unit_cost FROM assets WHERE id = ?').get(asset_id);
+    const asset = await db.get('SELECT unit_cost FROM assets WHERE id = ?', asset_id);
     cost = asset ? asset.unit_cost : 0;
   }
 
   const totalCost = parsedQty * cost;
   const pDate = purchase_date || new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-  // Generate unique purchase reference
-  const count = db.prepare('SELECT COUNT(*) as cnt FROM purchases').get().cnt + 1;
+  const countObj = await db.get('SELECT COUNT(*) as cnt FROM purchases');
+  const count = (countObj ? countObj.cnt : 0) + 1;
   const purchaseRef = `PUR-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
 
-  const transaction = db.transaction(() => {
-    // 1. Insert Purchase Record
-    const insertStmt = db.prepare(`
+  try {
+    const insertRes = await db.run(`
       INSERT INTO purchases (purchase_ref, base_id, asset_id, quantity, unit_cost, total_cost, supplier, purchase_date, created_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const result = insertStmt.run(purchaseRef, base_id, asset_id, parsedQty, cost, totalCost, supplier, pDate, req.user.id);
+    `, purchaseRef, base_id, asset_id, parsedQty, cost, totalCost, supplier, pDate, req.user.id);
 
-    // 2. Update or Create Inventory Record
-    const inv = db.prepare('SELECT id, current_stock FROM inventory WHERE base_id = ? AND asset_id = ?').get(base_id, asset_id);
+    const purchaseId = insertRes.lastInsertRowid;
+
+    // Update or Create Inventory
+    const inv = await db.get('SELECT id, current_stock FROM inventory WHERE base_id = ? AND asset_id = ?', base_id, asset_id);
     if (inv) {
-      db.prepare('UPDATE inventory SET current_stock = current_stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(parsedQty, inv.id);
+      await db.run('UPDATE inventory SET current_stock = current_stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', parsedQty, inv.id);
     } else {
-      db.prepare('INSERT INTO inventory (base_id, asset_id, opening_balance, current_stock) VALUES (?, ?, 0, ?)')
-        .run(base_id, asset_id, parsedQty);
+      await db.run('INSERT INTO inventory (base_id, asset_id, opening_balance, current_stock) VALUES (?, ?, 0, ?)', base_id, asset_id, parsedQty);
     }
 
-    return result.lastInsertRowid;
-  });
-
-  try {
-    const purchaseId = transaction();
-
-    // Log Audit
-    logAudit(req, 'RECORD_PURCHASE', 'purchases', purchaseRef, base_id, {
+    await logAudit(req, 'RECORD_PURCHASE', 'purchases', purchaseRef, base_id, {
       asset_id,
       quantity: parsedQty,
       unit_cost: cost,
@@ -122,14 +102,14 @@ router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander', 'L
       supplier
     });
 
-    const newRecord = db.prepare(`
+    const newRecord = await db.get(`
       SELECT p.*, b.name as base_name, a.name as asset_name, et.name as equipment_type_name
       FROM purchases p
       JOIN bases b ON p.base_id = b.id
       JOIN assets a ON p.asset_id = a.id
       JOIN equipment_types et ON a.equipment_type_id = et.id
       WHERE p.id = ?
-    `).get(purchaseId);
+    `, purchaseId);
 
     res.status(201).json({
       message: 'Asset purchase recorded successfully.',

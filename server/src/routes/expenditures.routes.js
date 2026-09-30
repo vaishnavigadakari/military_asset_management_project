@@ -5,8 +5,8 @@ const { authenticateToken } = require('../middleware/auth');
 const { authorizeRoles, enforceBaseScope } = require('../middleware/rbac');
 const { logAudit } = require('../middleware/auditLogger');
 
-// GET /api/expenditures - List expenditure records
-router.get('/', authenticateToken, (req, res) => {
+// GET /api/expenditures
+router.get('/', authenticateToken, async (req, res) => {
   try {
     let { startDate, endDate, baseId, equipmentTypeId, search } = req.query;
 
@@ -25,7 +25,6 @@ router.get('/', authenticateToken, (req, res) => {
     `;
     const params = [];
 
-    // Base scoping for non-admin
     if (req.user.role !== 'Admin' && req.user.base_id) {
       query += ' AND e.base_id = ?';
       params.push(req.user.base_id);
@@ -34,18 +33,9 @@ router.get('/', authenticateToken, (req, res) => {
       params.push(baseId);
     }
 
-    if (startDate) {
-      query += ' AND e.expended_date >= ?';
-      params.push(startDate);
-    }
-    if (endDate) {
-      query += ' AND e.expended_date <= ?';
-      params.push(endDate + ' 23:59:59');
-    }
-    if (equipmentTypeId && equipmentTypeId !== 'all') {
-      query += ' AND et.id = ?';
-      params.push(equipmentTypeId);
-    }
+    if (startDate) { query += ' AND e.expended_date >= ?'; params.push(startDate); }
+    if (endDate) { query += ' AND e.expended_date <= ?'; params.push(endDate + ' 23:59:59'); }
+    if (equipmentTypeId && equipmentTypeId !== 'all') { query += ' AND et.id = ?'; params.push(equipmentTypeId); }
     if (search) {
       query += ' AND (e.expenditure_ref LIKE ? OR e.reason LIKE ? OR a.name LIKE ?)';
       const term = `%${search}%`;
@@ -54,7 +44,7 @@ router.get('/', authenticateToken, (req, res) => {
 
     query += ' ORDER BY e.expended_date DESC';
 
-    const expenditures = db.prepare(query).all(...params);
+    const expenditures = await db.all(query, ...params);
     res.json(expenditures);
   } catch (error) {
     console.error('Error fetching expenditures:', error);
@@ -62,8 +52,8 @@ router.get('/', authenticateToken, (req, res) => {
   }
 });
 
-// POST /api/expenditures - Record expended asset
-router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander'), enforceBaseScope, (req, res) => {
+// POST /api/expenditures
+router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander'), enforceBaseScope, async (req, res) => {
   const { base_id, asset_id, quantity, reason, expended_date } = req.body;
 
   if (!base_id || !asset_id || !quantity || !reason) {
@@ -77,46 +67,34 @@ router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander'), e
 
   const eDate = expended_date || new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-  const count = db.prepare('SELECT COUNT(*) as cnt FROM expenditures').get().cnt + 1;
+  const countObj = await db.get('SELECT COUNT(*) as cnt FROM expenditures');
+  const count = (countObj ? countObj.cnt : 0) + 1;
   const expenditureRef = `EXP-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
 
-  const transaction = db.transaction(() => {
-    // 1. Insert expenditure record
-    const insertStmt = db.prepare(`
+  try {
+    const insertRes = await db.run(`
       INSERT INTO expenditures (expenditure_ref, base_id, asset_id, quantity, reason, expended_date, reported_by)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    const result = insertStmt.run(expenditureRef, base_id, asset_id, parsedQty, reason, eDate, req.user.id);
+    `, expenditureRef, base_id, asset_id, parsedQty, reason, eDate, req.user.id);
 
-    // 2. Deduct inventory stock
-    db.prepare('UPDATE inventory SET current_stock = current_stock - ?, updated_at = CURRENT_TIMESTAMP WHERE base_id = ? AND asset_id = ?')
-      .run(parsedQty, base_id, asset_id);
+    const expenditureId = insertRes.lastInsertRowid;
 
-    return result.lastInsertRowid;
-  });
+    await db.run('UPDATE inventory SET current_stock = current_stock - ?, updated_at = CURRENT_TIMESTAMP WHERE base_id = ? AND asset_id = ?', parsedQty, base_id, asset_id);
 
-  try {
-    const expenditureId = transaction();
-
-    logAudit(req, 'LOG_EXPENDITURE', 'expenditures', expenditureRef, base_id, {
-      asset_id,
-      quantity: parsedQty,
-      reason
+    await logAudit(req, 'LOG_EXPENDITURE', 'expenditures', expenditureRef, base_id, {
+      asset_id, quantity: parsedQty, reason
     });
 
-    const newRecord = db.prepare(`
+    const newRecord = await db.get(`
       SELECT e.*, b.name as base_name, a.name as asset_name, et.name as equipment_type_name
       FROM expenditures e
       JOIN bases b ON e.base_id = b.id
       JOIN assets a ON e.asset_id = a.id
       JOIN equipment_types et ON a.equipment_type_id = et.id
       WHERE e.id = ?
-    `).get(expenditureId);
+    `, expenditureId);
 
-    res.status(201).json({
-      message: 'Asset expenditure logged successfully.',
-      expenditure: newRecord
-    });
+    res.status(201).json({ message: 'Asset expenditure logged successfully.', expenditure: newRecord });
   } catch (error) {
     console.error('Error logging expenditure:', error);
     res.status(500).json({ message: 'Failed to record expenditure.', error: error.message });

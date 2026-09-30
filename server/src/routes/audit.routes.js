@@ -3,8 +3,8 @@ const router = express.Router();
 const db = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 
-// GET /api/audit - Fetch transaction audit log history
-router.get('/', authenticateToken, (req, res) => {
+// GET /api/audit
+router.get('/', authenticateToken, async (req, res) => {
   try {
     let { limit, baseId, action } = req.query;
     const max = parseInt(limit, 10) || 50;
@@ -33,7 +33,7 @@ router.get('/', authenticateToken, (req, res) => {
     query += ' ORDER BY al.timestamp DESC LIMIT ?';
     params.push(max);
 
-    const logs = db.prepare(query).all(...params);
+    const logs = await db.all(query, ...params);
     res.json(logs);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch audit log history.', error: error.message });

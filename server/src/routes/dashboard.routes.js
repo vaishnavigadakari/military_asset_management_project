@@ -4,11 +4,10 @@ const { authenticateToken } = require('../middleware/auth');
 const { getDashboardMetrics, getNetMovementBreakdown } = require('../services/metricsService');
 
 // Get Dashboard Aggregated Key Metrics
-router.get('/metrics', authenticateToken, (req, res) => {
+router.get('/metrics', authenticateToken, async (req, res) => {
   try {
     let { startDate, endDate, baseId, equipmentTypeId } = req.query;
 
-    // Scoping for Base Commander and Logistics Officer if baseId is not explicit
     if (req.user.role !== 'Admin' && req.user.base_id) {
       if (!baseId || baseId === 'all') {
         baseId = String(req.user.base_id);
@@ -22,7 +21,7 @@ router.get('/metrics', authenticateToken, (req, res) => {
       equipmentTypeId: equipmentTypeId || 'all'
     };
 
-    const metrics = getDashboardMetrics(filters);
+    const metrics = await getDashboardMetrics(filters);
     res.json({
       filters,
       metrics
@@ -33,8 +32,8 @@ router.get('/metrics', authenticateToken, (req, res) => {
   }
 });
 
-// Get Pop-up Detailed Breakdowns for Net Movement (Purchases, Transfers In, Transfers Out) [Bonus Requirement]
-router.get('/breakdown', authenticateToken, (req, res) => {
+// Get Pop-up Detailed Breakdowns for Net Movement
+router.get('/breakdown', authenticateToken, async (req, res) => {
   try {
     let { startDate, endDate, baseId, equipmentTypeId } = req.query;
 
@@ -51,7 +50,7 @@ router.get('/breakdown', authenticateToken, (req, res) => {
       equipmentTypeId: equipmentTypeId || 'all'
     };
 
-    const breakdown = getNetMovementBreakdown(filters);
+    const breakdown = await getNetMovementBreakdown(filters);
     res.json(breakdown);
   } catch (error) {
     console.error('Error fetching net movement breakdown:', error);

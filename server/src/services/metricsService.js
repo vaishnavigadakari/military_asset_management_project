@@ -4,24 +4,10 @@ const db = require('../config/database');
  * Computes opening balance, net movement, closing balance, assigned and expended metrics
  * with support for Date range, Base, and Equipment Type filters.
  */
-function getDashboardMetrics(filters = {}) {
+async function getDashboardMetrics(filters = {}) {
   const { startDate, endDate, baseId, equipmentTypeId } = filters;
 
-  // Build base and equipment conditions for parameters
-  let baseWhereClause = '';
-  let equipWhereClause = '';
-  const params = [];
-
-  if (baseId && baseId !== 'all') {
-    baseWhereClause = ' AND b.id = ? ';
-  }
-  if (equipmentTypeId && equipmentTypeId !== 'all') {
-    equipWhereClause = ' AND et.id = ? ';
-  }
-
-  // 1. Calculate Opening Balance Baseline + movements prior to startDate
-  let openingBalance = 0;
-
+  // 1. Calculate Opening Balance Baseline
   let invQuery = `
     SELECT COALESCE(SUM(inv.opening_balance), 0) as total
     FROM inventory inv
@@ -39,9 +25,8 @@ function getDashboardMetrics(filters = {}) {
     invQuery += ' AND et.id = ?';
     invParams.push(equipmentTypeId);
   }
-  const baseOpeningInv = db.prepare(invQuery).get(...invParams).total;
-
-  openingBalance = baseOpeningInv;
+  const baseOpeningRes = await db.get(invQuery, ...invParams);
+  let openingBalance = baseOpeningRes ? baseOpeningRes.total : 0;
 
   if (startDate) {
     // Add Purchases prior to startDate
@@ -61,7 +46,8 @@ function getDashboardMetrics(filters = {}) {
       priorPurchasesQuery += ' AND et.id = ?';
       priorPParams.push(equipmentTypeId);
     }
-    const priorPurchases = db.prepare(priorPurchasesQuery).get(...priorPParams).total;
+    const priorPRes = await db.get(priorPurchasesQuery, ...priorPParams);
+    const priorPurchases = priorPRes ? priorPRes.total : 0;
 
     // Add Transfers In prior to startDate
     let priorTrfInQuery = `
@@ -80,7 +66,8 @@ function getDashboardMetrics(filters = {}) {
       priorTrfInQuery += ' AND et.id = ?';
       priorTrfInParams.push(equipmentTypeId);
     }
-    const priorTrfIn = db.prepare(priorTrfInQuery).get(...priorTrfInParams).total;
+    const priorTrfInRes = await db.get(priorTrfInQuery, ...priorTrfInParams);
+    const priorTrfIn = priorTrfInRes ? priorTrfInRes.total : 0;
 
     // Deduct Transfers Out prior to startDate
     let priorTrfOutQuery = `
@@ -99,7 +86,8 @@ function getDashboardMetrics(filters = {}) {
       priorTrfOutQuery += ' AND et.id = ?';
       priorTrfOutParams.push(equipmentTypeId);
     }
-    const priorTrfOut = db.prepare(priorTrfOutQuery).get(...priorTrfOutParams).total;
+    const priorTrfOutRes = await db.get(priorTrfOutQuery, ...priorTrfOutParams);
+    const priorTrfOut = priorTrfOutRes ? priorTrfOutRes.total : 0;
 
     // Deduct Expenditures prior to startDate
     let priorExpQuery = `
@@ -118,7 +106,8 @@ function getDashboardMetrics(filters = {}) {
       priorExpQuery += ' AND et.id = ?';
       priorExpParams.push(equipmentTypeId);
     }
-    const priorExp = db.prepare(priorExpQuery).get(...priorExpParams).total;
+    const priorExpRes = await db.get(priorExpQuery, ...priorExpParams);
+    const priorExp = priorExpRes ? priorExpRes.total : 0;
 
     openingBalance = openingBalance + priorPurchases + priorTrfIn - priorTrfOut - priorExp;
   }
@@ -132,25 +121,13 @@ function getDashboardMetrics(filters = {}) {
     WHERE 1=1
   `;
   const pParams = [];
-  if (startDate) {
-    purchasesQuery += ' AND p.purchase_date >= ?';
-    pParams.push(startDate);
-  }
-  if (endDate) {
-    purchasesQuery += ' AND p.purchase_date <= ?';
-    pParams.push(endDate + ' 23:59:59');
-  }
-  if (baseId && baseId !== 'all') {
-    purchasesQuery += ' AND p.base_id = ?';
-    pParams.push(baseId);
-  }
-  if (equipmentTypeId && equipmentTypeId !== 'all') {
-    purchasesQuery += ' AND et.id = ?';
-    pParams.push(equipmentTypeId);
-  }
-  const purchaseRes = db.prepare(purchasesQuery).get(...pParams);
-  const purchasesCount = purchaseRes.total;
-  const purchasesValue = purchaseRes.total_value;
+  if (startDate) { purchasesQuery += ' AND p.purchase_date >= ?'; pParams.push(startDate); }
+  if (endDate) { purchasesQuery += ' AND p.purchase_date <= ?'; pParams.push(endDate + ' 23:59:59'); }
+  if (baseId && baseId !== 'all') { purchasesQuery += ' AND p.base_id = ?'; pParams.push(baseId); }
+  if (equipmentTypeId && equipmentTypeId !== 'all') { purchasesQuery += ' AND et.id = ?'; pParams.push(equipmentTypeId); }
+  const purchaseRes = await db.get(purchasesQuery, ...pParams);
+  const purchasesCount = purchaseRes ? purchaseRes.total : 0;
+  const purchasesValue = purchaseRes ? purchaseRes.total_value : 0;
 
   // 3. Calculate Transfers In within Date Range
   let trfInQuery = `
@@ -161,23 +138,12 @@ function getDashboardMetrics(filters = {}) {
     WHERE t.status = 'Completed'
   `;
   const trfInParams = [];
-  if (startDate) {
-    trfInQuery += ' AND t.transfer_date >= ?';
-    trfInParams.push(startDate);
-  }
-  if (endDate) {
-    trfInQuery += ' AND t.transfer_date <= ?';
-    trfInParams.push(endDate + ' 23:59:59');
-  }
-  if (baseId && baseId !== 'all') {
-    trfInQuery += ' AND t.to_base_id = ?';
-    trfInParams.push(baseId);
-  }
-  if (equipmentTypeId && equipmentTypeId !== 'all') {
-    trfInQuery += ' AND et.id = ?';
-    trfInParams.push(equipmentTypeId);
-  }
-  const transfersInCount = db.prepare(trfInQuery).get(...trfInParams).total;
+  if (startDate) { trfInQuery += ' AND t.transfer_date >= ?'; trfInParams.push(startDate); }
+  if (endDate) { trfInQuery += ' AND t.transfer_date <= ?'; trfInParams.push(endDate + ' 23:59:59'); }
+  if (baseId && baseId !== 'all') { trfInQuery += ' AND t.to_base_id = ?'; trfInParams.push(baseId); }
+  if (equipmentTypeId && equipmentTypeId !== 'all') { trfInQuery += ' AND et.id = ?'; trfInParams.push(equipmentTypeId); }
+  const trfInRes = await db.get(trfInQuery, ...trfInParams);
+  const transfersInCount = trfInRes ? trfInRes.total : 0;
 
   // 4. Calculate Transfers Out within Date Range
   let trfOutQuery = `
@@ -188,23 +154,12 @@ function getDashboardMetrics(filters = {}) {
     WHERE t.status = 'Completed'
   `;
   const trfOutParams = [];
-  if (startDate) {
-    trfOutQuery += ' AND t.transfer_date >= ?';
-    trfOutParams.push(startDate);
-  }
-  if (endDate) {
-    trfOutQuery += ' AND t.transfer_date <= ?';
-    trfOutParams.push(endDate + ' 23:59:59');
-  }
-  if (baseId && baseId !== 'all') {
-    trfOutQuery += ' AND t.from_base_id = ?';
-    trfOutParams.push(baseId);
-  }
-  if (equipmentTypeId && equipmentTypeId !== 'all') {
-    trfOutQuery += ' AND et.id = ?';
-    trfOutParams.push(equipmentTypeId);
-  }
-  const transfersOutCount = db.prepare(trfOutQuery).get(...trfOutParams).total;
+  if (startDate) { trfOutQuery += ' AND t.transfer_date >= ?'; trfOutParams.push(startDate); }
+  if (endDate) { trfOutQuery += ' AND t.transfer_date <= ?'; trfOutParams.push(endDate + ' 23:59:59'); }
+  if (baseId && baseId !== 'all') { trfOutQuery += ' AND t.from_base_id = ?'; trfOutParams.push(baseId); }
+  if (equipmentTypeId && equipmentTypeId !== 'all') { trfOutQuery += ' AND et.id = ?'; trfOutParams.push(equipmentTypeId); }
+  const trfOutRes = await db.get(trfOutQuery, ...trfOutParams);
+  const transfersOutCount = trfOutRes ? trfOutRes.total : 0;
 
   // 5. Calculate Expended within Date Range
   let expendedQuery = `
@@ -215,25 +170,14 @@ function getDashboardMetrics(filters = {}) {
     WHERE 1=1
   `;
   const expParams = [];
-  if (startDate) {
-    expendedQuery += ' AND e.expended_date >= ?';
-    expParams.push(startDate);
-  }
-  if (endDate) {
-    expendedQuery += ' AND e.expended_date <= ?';
-    expParams.push(endDate + ' 23:59:59');
-  }
-  if (baseId && baseId !== 'all') {
-    expendedQuery += ' AND e.base_id = ?';
-    expParams.push(baseId);
-  }
-  if (equipmentTypeId && equipmentTypeId !== 'all') {
-    expendedQuery += ' AND et.id = ?';
-    expParams.push(equipmentTypeId);
-  }
-  const expendedCount = db.prepare(expendedQuery).get(...expParams).total;
+  if (startDate) { expendedQuery += ' AND e.expended_date >= ?'; expParams.push(startDate); }
+  if (endDate) { expendedQuery += ' AND e.expended_date <= ?'; expParams.push(endDate + ' 23:59:59'); }
+  if (baseId && baseId !== 'all') { expendedQuery += ' AND e.base_id = ?'; expParams.push(baseId); }
+  if (equipmentTypeId && equipmentTypeId !== 'all') { expendedQuery += ' AND et.id = ?'; expParams.push(equipmentTypeId); }
+  const expRes = await db.get(expendedQuery, ...expParams);
+  const expendedCount = expRes ? expRes.total : 0;
 
-  // 6. Calculate Assigned (Active assignments currently assigned)
+  // 6. Calculate Assigned
   let assignedQuery = `
     SELECT COALESCE(SUM(asn.quantity), 0) as total
     FROM assignments asn
@@ -242,20 +186,12 @@ function getDashboardMetrics(filters = {}) {
     WHERE asn.status = 'Active'
   `;
   const asnParams = [];
-  if (baseId && baseId !== 'all') {
-    assignedQuery += ' AND asn.base_id = ?';
-    asnParams.push(baseId);
-  }
-  if (equipmentTypeId && equipmentTypeId !== 'all') {
-    assignedQuery += ' AND et.id = ?';
-    asnParams.push(equipmentTypeId);
-  }
-  const assignedCount = db.prepare(assignedQuery).get(...asnParams).total;
+  if (baseId && baseId !== 'all') { assignedQuery += ' AND asn.base_id = ?'; asnParams.push(baseId); }
+  if (equipmentTypeId && equipmentTypeId !== 'all') { assignedQuery += ' AND et.id = ?'; asnParams.push(equipmentTypeId); }
+  const asnRes = await db.get(assignedQuery, ...asnParams);
+  const assignedCount = asnRes ? asnRes.total : 0;
 
-  // Derived Formulas
-  // Net Movement = Purchases + Transfer In - Transfer Out
   const netMovement = purchasesCount + transfersInCount - transfersOutCount;
-  // Closing Balance = Opening Balance + Net Movement - Expended
   const closingBalance = openingBalance + netMovement - expendedCount;
 
   return {
@@ -271,13 +207,9 @@ function getDashboardMetrics(filters = {}) {
   };
 }
 
-/**
- * Fetch detailed pop-up records for Net Movement (Purchases, Transfers In, Transfers Out)
- */
-function getNetMovementBreakdown(filters = {}) {
+async function getNetMovementBreakdown(filters = {}) {
   const { startDate, endDate, baseId, equipmentTypeId } = filters;
 
-  // 1. Detailed Purchases
   let pQuery = `
     SELECT p.id, p.purchase_ref, p.purchase_date, b.name as base_name, a.name as asset_name,
            et.name as equipment_type, p.quantity, p.unit_cost, p.total_cost, p.supplier
@@ -293,9 +225,8 @@ function getNetMovementBreakdown(filters = {}) {
   if (baseId && baseId !== 'all') { pQuery += ' AND p.base_id = ?'; pParams.push(baseId); }
   if (equipmentTypeId && equipmentTypeId !== 'all') { pQuery += ' AND et.id = ?'; pParams.push(equipmentTypeId); }
   pQuery += ' ORDER BY p.purchase_date DESC';
-  const purchasesList = db.prepare(pQuery).all(...pParams);
+  const purchasesList = await db.all(pQuery, ...pParams);
 
-  // 2. Detailed Transfers In
   let trfInQuery = `
     SELECT t.id, t.transfer_ref, t.transfer_date, fb.name as from_base, tb.name as to_base,
            a.name as asset_name, et.name as equipment_type, t.quantity, t.status, t.notes
@@ -312,9 +243,8 @@ function getNetMovementBreakdown(filters = {}) {
   if (baseId && baseId !== 'all') { trfInQuery += ' AND t.to_base_id = ?'; trfInParams.push(baseId); }
   if (equipmentTypeId && equipmentTypeId !== 'all') { trfInQuery += ' AND et.id = ?'; trfInParams.push(equipmentTypeId); }
   trfInQuery += ' ORDER BY t.transfer_date DESC';
-  const transfersInList = db.prepare(trfInQuery).all(...trfInParams);
+  const transfersInList = await db.all(trfInQuery, ...trfInParams);
 
-  // 3. Detailed Transfers Out
   let trfOutQuery = `
     SELECT t.id, t.transfer_ref, t.transfer_date, fb.name as from_base, tb.name as to_base,
            a.name as asset_name, et.name as equipment_type, t.quantity, t.status, t.notes
@@ -331,7 +261,7 @@ function getNetMovementBreakdown(filters = {}) {
   if (baseId && baseId !== 'all') { trfOutQuery += ' AND t.from_base_id = ?'; trfOutParams.push(baseId); }
   if (equipmentTypeId && equipmentTypeId !== 'all') { trfOutQuery += ' AND et.id = ?'; trfOutParams.push(equipmentTypeId); }
   trfOutQuery += ' ORDER BY t.transfer_date DESC';
-  const transfersOutList = db.prepare(trfOutQuery).all(...trfOutParams);
+  const transfersOutList = await db.all(trfOutQuery, ...trfOutParams);
 
   return {
     purchasesList,

@@ -5,8 +5,8 @@ const { authenticateToken } = require('../middleware/auth');
 const { authorizeRoles, enforceBaseScope } = require('../middleware/rbac');
 const { logAudit } = require('../middleware/auditLogger');
 
-// GET /api/assignments - List asset assignments
-router.get('/', authenticateToken, (req, res) => {
+// GET /api/assignments
+router.get('/', authenticateToken, async (req, res) => {
   try {
     let { startDate, endDate, baseId, status, equipmentTypeId, search } = req.query;
 
@@ -26,7 +26,6 @@ router.get('/', authenticateToken, (req, res) => {
     `;
     const params = [];
 
-    // Base scoping for non-admin
     if (req.user.role !== 'Admin' && req.user.base_id) {
       query += ' AND asn.base_id = ?';
       params.push(req.user.base_id);
@@ -35,22 +34,10 @@ router.get('/', authenticateToken, (req, res) => {
       params.push(baseId);
     }
 
-    if (startDate) {
-      query += ' AND asn.assigned_date >= ?';
-      params.push(startDate);
-    }
-    if (endDate) {
-      query += ' AND asn.assigned_date <= ?';
-      params.push(endDate + ' 23:59:59');
-    }
-    if (status && status !== 'all') {
-      query += ' AND asn.status = ?';
-      params.push(status);
-    }
-    if (equipmentTypeId && equipmentTypeId !== 'all') {
-      query += ' AND et.id = ?';
-      params.push(equipmentTypeId);
-    }
+    if (startDate) { query += ' AND asn.assigned_date >= ?'; params.push(startDate); }
+    if (endDate) { query += ' AND asn.assigned_date <= ?'; params.push(endDate + ' 23:59:59'); }
+    if (status && status !== 'all') { query += ' AND asn.status = ?'; params.push(status); }
+    if (equipmentTypeId && equipmentTypeId !== 'all') { query += ' AND et.id = ?'; params.push(equipmentTypeId); }
     if (search) {
       query += ' AND (asn.assignment_ref LIKE ? OR asn.assigned_to_name LIKE ? OR asn.assigned_to_service_id LIKE ? OR a.name LIKE ?)';
       const term = `%${search}%`;
@@ -59,7 +46,7 @@ router.get('/', authenticateToken, (req, res) => {
 
     query += ' ORDER BY asn.assigned_date DESC';
 
-    const assignments = db.prepare(query).all(...params);
+    const assignments = await db.all(query, ...params);
     res.json(assignments);
   } catch (error) {
     console.error('Error fetching assignments:', error);
@@ -67,8 +54,8 @@ router.get('/', authenticateToken, (req, res) => {
   }
 });
 
-// POST /api/assignments - Assign asset to personnel
-router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander'), enforceBaseScope, (req, res) => {
+// POST /api/assignments
+router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander'), enforceBaseScope, async (req, res) => {
   const { base_id, asset_id, assigned_to_name, assigned_to_service_id, unit_squad, quantity, assigned_date, expected_return_date } = req.body;
 
   if (!base_id || !asset_id || !assigned_to_name || !assigned_to_service_id || !quantity) {
@@ -82,54 +69,43 @@ router.post('/', authenticateToken, authorizeRoles('Admin', 'Base Commander'), e
 
   const aDate = assigned_date || new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-  const count = db.prepare('SELECT COUNT(*) as cnt FROM assignments').get().cnt + 1;
+  const countObj = await db.get('SELECT COUNT(*) as cnt FROM assignments');
+  const count = (countObj ? countObj.cnt : 0) + 1;
   const assignmentRef = `ASN-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
 
-  const transaction = db.transaction(() => {
-    // Insert assignment record
-    const insertStmt = db.prepare(`
+  try {
+    const insertRes = await db.run(`
       INSERT INTO assignments (assignment_ref, base_id, asset_id, assigned_to_name, assigned_to_service_id, unit_squad, quantity, assigned_date, expected_return_date, status, assigned_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', ?)
-    `);
-    const result = insertStmt.run(assignmentRef, base_id, asset_id, assigned_to_name, assigned_to_service_id, unit_squad || 'Default Platoon', parsedQty, aDate, expected_return_date || null, req.user.id);
+    `, assignmentRef, base_id, asset_id, assigned_to_name, assigned_to_service_id, unit_squad || 'Default Platoon', parsedQty, aDate, expected_return_date || null, req.user.id);
 
-    return result.lastInsertRowid;
-  });
+    const assignmentId = insertRes.lastInsertRowid;
 
-  try {
-    const assignmentId = transaction();
-
-    logAudit(req, 'CREATE_ASSIGNMENT', 'assignments', assignmentRef, base_id, {
-      asset_id,
-      assigned_to_name,
-      assigned_to_service_id,
-      quantity: parsedQty
+    await logAudit(req, 'CREATE_ASSIGNMENT', 'assignments', assignmentRef, base_id, {
+      asset_id, assigned_to_name, assigned_to_service_id, quantity: parsedQty
     });
 
-    const newRecord = db.prepare(`
+    const newRecord = await db.get(`
       SELECT asn.*, b.name as base_name, a.name as asset_name, et.name as equipment_type_name
       FROM assignments asn
       JOIN bases b ON asn.base_id = b.id
       JOIN assets a ON asn.asset_id = a.id
       JOIN equipment_types et ON a.equipment_type_id = et.id
       WHERE asn.id = ?
-    `).get(assignmentId);
+    `, assignmentId);
 
-    res.status(201).json({
-      message: 'Asset assigned successfully.',
-      assignment: newRecord
-    });
+    res.status(201).json({ message: 'Asset assigned successfully.', assignment: newRecord });
   } catch (error) {
     console.error('Error assigning asset:', error);
     res.status(500).json({ message: 'Failed to assign asset.', error: error.message });
   }
 });
 
-// PATCH /api/assignments/:id/return - Return assigned asset
-router.patch('/:id/return', authenticateToken, authorizeRoles('Admin', 'Base Commander'), (req, res) => {
+// PATCH /api/assignments/:id/return
+router.patch('/:id/return', authenticateToken, authorizeRoles('Admin', 'Base Commander'), async (req, res) => {
   const { id } = req.params;
 
-  const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+  const existing = await db.get('SELECT * FROM assignments WHERE id = ?', id);
   if (!existing) {
     return res.status(404).json({ message: 'Assignment record not found.' });
   }
@@ -138,22 +114,24 @@ router.patch('/:id/return', authenticateToken, authorizeRoles('Admin', 'Base Com
     return res.status(400).json({ message: 'Asset is already marked as returned.' });
   }
 
-  // Base scope check
   if (req.user.role !== 'Admin' && req.user.base_id) {
     if (parseInt(existing.base_id, 10) !== parseInt(req.user.base_id, 10)) {
       return res.status(403).json({ message: 'RBAC Violation: Cannot return asset assigned at another base.' });
     }
   }
 
-  db.prepare('UPDATE assignments SET status = "Returned" WHERE id = ?').run(id);
+  try {
+    await db.run('UPDATE assignments SET status = "Returned" WHERE id = ?', id);
 
-  logAudit(req, 'RETURN_ASSIGNMENT', 'assignments', existing.assignment_ref, existing.base_id, {
-    assigned_to_name: existing.assigned_to_name,
-    asset_id: existing.asset_id,
-    quantity: existing.quantity
-  });
+    await logAudit(req, 'RETURN_ASSIGNMENT', 'assignments', existing.assignment_ref, existing.base_id, {
+      assigned_to_name: existing.assigned_to_name, asset_id: existing.asset_id, quantity: existing.quantity
+    });
 
-  res.json({ message: 'Asset marked as returned to armory stock.' });
+    res.json({ message: 'Asset marked as returned to armory stock.' });
+  } catch (error) {
+    console.error('Error returning assignment:', error);
+    res.status(500).json({ message: 'Failed to mark asset as returned.', error: error.message });
+  }
 });
 
 module.exports = router;

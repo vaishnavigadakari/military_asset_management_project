@@ -1,21 +1,36 @@
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 const path = require('path');
 const dotenv = require('dotenv');
+const fs = require('fs');
 
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
-const defaultDbPath = process.env.NODE_ENV === 'production' 
+const defaultDbPath = process.env.NODE_ENV === 'production'
   ? path.join('/tmp', 'mams_database.sqlite')
   : path.join(__dirname, '../../mams_database.sqlite');
 
 const dbPath = process.env.DB_FILE || defaultDbPath;
-const db = new Database(dbPath);
 
-// Enable foreign keys
-db.pragma('foreign_keys = ON');
+let dbPromise = null;
 
-function initializeDatabase() {
-  db.exec(`
+async function getDb() {
+  if (!dbPromise) {
+    dbPromise = (async () => {
+      const db = await open({
+        filename: dbPath,
+        driver: sqlite3.Database
+      });
+      await db.run('PRAGMA foreign_keys = ON;');
+      await initializeDatabase(db);
+      return db;
+    })();
+  }
+  return dbPromise;
+}
+
+async function initializeDatabase(db) {
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS bases (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -155,6 +170,25 @@ function initializeDatabase() {
   `);
 }
 
-initializeDatabase();
+// Wrapper Object offering db methods
+const dbWrapper = {
+  async get(sql, ...params) {
+    const db = await getDb();
+    return db.get(sql, ...params);
+  },
+  async all(sql, ...params) {
+    const db = await getDb();
+    return db.all(sql, ...params);
+  },
+  async run(sql, ...params) {
+    const db = await getDb();
+    const res = await db.run(sql, ...params);
+    return { lastInsertRowid: res.lastID, changes: res.changes };
+  },
+  async exec(sql) {
+    const db = await getDb();
+    return db.exec(sql);
+  }
+};
 
-module.exports = db;
+module.exports = dbWrapper;

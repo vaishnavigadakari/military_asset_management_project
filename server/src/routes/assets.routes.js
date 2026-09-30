@@ -3,18 +3,18 @@ const router = express.Router();
 const db = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 
-// GET /api/assets/types - List equipment categories
-router.get('/types', authenticateToken, (req, res) => {
+// GET /api/assets/types
+router.get('/types', authenticateToken, async (req, res) => {
   try {
-    const types = db.prepare('SELECT * FROM equipment_types ORDER BY name ASC').all();
+    const types = await db.all('SELECT * FROM equipment_types ORDER BY name ASC');
     res.json(types);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch equipment types.', error: error.message });
   }
 });
 
-// GET /api/assets - List all equipment assets
-router.get('/', authenticateToken, (req, res) => {
+// GET /api/assets
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const { equipmentTypeId } = req.query;
     let query = `
@@ -30,15 +30,15 @@ router.get('/', authenticateToken, (req, res) => {
     }
     query += ' ORDER BY a.name ASC';
 
-    const assets = db.prepare(query).all(...params);
+    const assets = await db.all(query, ...params);
     res.json(assets);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch assets.', error: error.message });
   }
 });
 
-// GET /api/assets/inventory - Get current stock across bases
-router.get('/inventory', authenticateToken, (req, res) => {
+// GET /api/assets/inventory
+router.get('/inventory', authenticateToken, async (req, res) => {
   try {
     let { baseId, equipmentTypeId } = req.query;
 
@@ -70,7 +70,7 @@ router.get('/inventory', authenticateToken, (req, res) => {
 
     query += ' ORDER BY b.name ASC, a.name ASC';
 
-    const inventory = db.prepare(query).all(...params);
+    const inventory = await db.all(query, ...params);
     res.json(inventory);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch inventory balance.', error: error.message });
