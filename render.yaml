@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: military-asset-management-backend
+    env: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: JWT_SECRET
+        value: mams_secure_military_jwt_token_key_2026
+      - key: NODE_ENV
+        value: production
