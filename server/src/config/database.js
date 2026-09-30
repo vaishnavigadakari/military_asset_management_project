@@ -1,116 +1,14 @@
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 const path = require('path');
 const dotenv = require('dotenv');
-const fs = require('fs');
 
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 const dbPath = process.env.DB_FILE || path.join(__dirname, '../../mams_database.sqlite');
+const db = new Database(dbPath);
 
-// Open SQLite database file synchronously / via standard driver
-const rawDb = new sqlite3.Database(dbPath);
-
-// Enable Foreign Keys
-rawDb.run('PRAGMA foreign_keys = ON;');
-
-// Helper to convert callback-based sqlite3 to synchronous-style prepared statements
-class StatementWrapper {
-  constructor(sql) {
-    this.sql = sql;
-  }
-
-  get(...params) {
-    let result = undefined;
-    let done = false;
-    let err = null;
-
-    rawDb.get(this.sql, params, (e, row) => {
-      err = e;
-      result = row;
-      done = true;
-    });
-
-    // Deasync loop for zero-latency local query compatibility
-    const start = Date.now();
-    while (!done && (Date.now() - start) < 5000) {
-      require('deasync')?.runLoopOnce?.() || null;
-    }
-
-    if (err) throw err;
-    return result;
-  }
-
-  all(...params) {
-    let result = [];
-    let done = false;
-    let err = null;
-
-    rawDb.all(this.sql, params, (e, rows) => {
-      err = e;
-      result = rows || [];
-      done = true;
-    });
-
-    const start = Date.now();
-    while (!done && (Date.now() - start) < 5000) {
-      require('deasync')?.runLoopOnce?.() || null;
-    }
-
-    if (err) throw err;
-    return result;
-  }
-
-  run(...params) {
-    let result = { lastInsertRowid: null, changes: 0 };
-    let done = false;
-    let err = null;
-
-    rawDb.run(this.sql, params, function(e) {
-      err = e;
-      if (!e) {
-        result.lastInsertRowid = this.lastID;
-        result.changes = this.changes;
-      }
-      done = true;
-    });
-
-    const start = Date.now();
-    while (!done && (Date.now() - start) < 5000) {
-      require('deasync')?.runLoopOnce?.() || null;
-    }
-
-    if (err) throw err;
-    return result;
-  }
-}
-
-// Database Wrapper providing standard interface
-const db = {
-  pragma(pragmaSql) {
-    rawDb.run(`PRAGMA ${pragmaSql};`);
-  },
-  exec(sqlScript) {
-    rawDb.exec(sqlScript, (err) => {
-      if (err) console.error('DB Exec error:', err);
-    });
-  },
-  prepare(sql) {
-    return new StatementWrapper(sql);
-  },
-  transaction(fn) {
-    return (...args) => {
-      rawDb.run('BEGIN TRANSACTION;');
-      try {
-        const result = fn(...args);
-        rawDb.run('COMMIT;');
-        return result;
-      } catch (e) {
-        rawDb.run('ROLLBACK;');
-        throw e;
-      }
-    };
-  }
-};
+// Enable foreign keys
+db.pragma('foreign_keys = ON');
 
 function initializeDatabase() {
   db.exec(`
