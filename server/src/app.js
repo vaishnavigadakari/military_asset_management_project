@@ -7,15 +7,13 @@ dotenv.config();
 
 const { seedDatabase } = require('./services/seedData');
 
-// Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 5000;
+const HOST = '0.0.0.0';
 
-// Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
 
-// API Audit Transaction Middleware (HTTP Request Logger)
 app.use((req, res, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     console.log(`[API TRANSACT ${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
@@ -23,8 +21,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Seed initial database records
-seedDatabase();
+// Health / Root Status Endpoints
+app.get(['/', '/api'], (req, res) => {
+  res.json({
+    status: 'online',
+    system: 'Military Asset Management System (MAMS) API',
+    version: '1.0.0',
+    documentation: 'Access the frontend UI at https://client-alpha-lake.vercel.app'
+  });
+});
 
 // Mount Routes
 app.use('/api/auth', require('./routes/auth.routes'));
@@ -37,7 +42,6 @@ app.use('/api/bases', require('./routes/bases.routes'));
 app.use('/api/assets', require('./routes/assets.routes'));
 app.use('/api/audit', require('./routes/audit.routes'));
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error('Unhandled Server Error:', err);
   res.status(500).json({
@@ -46,11 +50,19 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`=======================================================`);
-  console.log(`Military Asset Management System (MAMS) Server Live`);
-  console.log(`Listening on: http://localhost:${PORT}`);
-  console.log(`=======================================================`);
+// Initialize database and start listening on 0.0.0.0 for Render host binding
+seedDatabase().then(() => {
+  app.listen(PORT, HOST, () => {
+    console.log(`=======================================================`);
+    console.log(`Military Asset Management System (MAMS) Server Live`);
+    console.log(`Listening on: http://${HOST}:${PORT}`);
+    console.log(`=======================================================`);
+  });
+}).catch(err => {
+  console.error('Database initialization error:', err);
+  app.listen(PORT, HOST, () => {
+    console.log(`Server listening on http://${HOST}:${PORT}`);
+  });
 });
 
 module.exports = app;
