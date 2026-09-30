@@ -4,7 +4,11 @@ const dotenv = require('dotenv');
 
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
-const dbPath = process.env.DB_FILE || path.join(__dirname, '../../mams_database.sqlite');
+const defaultDbPath = process.env.NODE_ENV === 'production' 
+  ? path.join('/tmp', 'mams_database.sqlite')
+  : path.join(__dirname, '../../mams_database.sqlite');
+
+const dbPath = process.env.DB_FILE || defaultDbPath;
 const db = new Database(dbPath);
 
 // Enable foreign keys
